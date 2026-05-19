@@ -1,0 +1,13 @@
+### Sanity check
+GET http://localhost:8000/
+
+### List models
+GET http://localhost:8000/models
+
+### Send a research question
+POST http://localhost:8000/chat
+Content-Type: application/json
+
+{
+  "question": "What is the current population of Bacolod City? [BRIEF]"
+} 
