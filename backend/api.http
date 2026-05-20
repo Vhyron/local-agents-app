@@ -4,10 +4,44 @@ GET http://localhost:8000/
 ### List models
 GET http://localhost:8000/models
 
+### List agents
+GET http://localhost:8000/agents
+
+### Create the default Research Agent
+POST http://localhost:8000/agents
+Content-Type: application/json
+
+{
+  "name": "Research Agent",
+  "system_prompt": "You are a concise research assistant. Find verified information from the web and report it tightly. Always cite sources.",
+  "model": "qwen2.5:7b",
+  "temperature": 0.3,
+  "enabled_tools": ["web_search", "read_url"]
+}
+
+### Get one agent
+GET http://localhost:8000/agents/1
+
+### Update an agent
+PUT http://localhost:8000/agents/1
+Content-Type: application/json
+
+{
+  "name": "Research Agent v2",
+  "system_prompt": "You are an even more concise research assistant.",
+  "model": "qwen2.5:7b",
+  "temperature": 0.2,
+  "enabled_tools": ["web_search", "read_url"]
+}
+
 ### Send a research question
 POST http://localhost:8000/chat
 Content-Type: application/json
 
 {
-  "question": "What is the current population of Bacolod City? [BRIEF]"
+  "question": "What is the current population of Bacolod City? [BRIEF]",
+  "agent_id": 1
 } 
+
+### Delete an agent
+DELETE http://localhost:8000/agents/1
