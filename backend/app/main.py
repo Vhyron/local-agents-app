@@ -1,9 +1,22 @@
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlmodel import Session, select
 import ollama
 
 from app.agent import run_agent
+from app.db import init_db, get_session
+from app.models import Agent, AgentCreate, AgentRead
+
+# ─── Lifespan ──────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Runs on startup and shutdown."""
+    init_db()
+    yield
+    # Nothing to clean up on shutdown for now
 
 # ─── App setup ─────────────────────────────────────────────────────────
 
@@ -11,6 +24,7 @@ app = FastAPI(
     title="Local Agents API",
     description="Backend for the local AI agent platform",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -25,7 +39,7 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     question: str
-    model: str | None = None
+    agent_id: int | None = None
 
 class ChatResponse(BaseModel):
     answer: str
@@ -34,7 +48,7 @@ class ModelInfo(BaseModel):
     name: str
     size: float
 
-# ─── Endpoints ─────────────────────────────────────────────────────────
+# ─── Health & models ───────────────────────────────────────────────────
 
 @app.get("/")
 def root():
@@ -68,11 +82,75 @@ def list_models():
             detail=f"Got response from Ollama but could not parse it: {e}"
         )
 
+# ─── Agents ────────────────────────────────────────────────────────────
+
+@app.get("/agents", response_model=list[AgentRead])
+def list_agents(session: Session = Depends(get_session)):
+    """List all saved agents."""
+    agents = session.exec(select(Agent)).all()
+    return agents
+
+@app.get("/agents/{agent_id}", response_model=AgentRead)
+def get_agent(agent_id: int, session: Session = Depends(get_session)):
+    """Get one agent by ID."""
+    agent = session.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    return agent
+
+@app.post("/agents", response_model=AgentRead)
+def create_agent(data: AgentCreate, session: Session = Depends(get_session)):
+    """Create a new agent."""
+    agent = Agent.model_validate(data)
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    return agent
+
+@app.put("/agents/{agent_id}", response_model=AgentRead)
+def update_agent(
+    agent_id: int,
+    data: AgentCreate,
+    session: Session = Depends(get_session),
+):
+    """Update an existing agent."""
+    agent = session.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+
+    for key, value in data.model_dump().items():
+        setattr(agent, key, value)
+
+    from datetime import datetime
+    agent.updated_at = datetime.utcnow()
+
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    return agent
+
+@app.delete("/agents/{agent_id}")
+def delete_agent(agent_id: int, session: Session = Depends(get_session)):
+    """Delete an agent."""
+    agent = session.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    session.delete(agent)
+    session.commit()
+    return {"deleted": agent_id}
+
+# ─── Chat ──────────────────────────────────────────────────────────────
+
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
-    """Send a question to the research agent and get an answer."""
+def chat(request: ChatRequest, session: Session = Depends(get_session)):
+    """Send a question to an agent and get an answer."""
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    if request.agent_id is not None:
+        agent = session.get(Agent, request.agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"Agent {request.agent_id} not found")
 
     try:
         answer = run_agent(request.question)
@@ -80,4 +158,4 @@ def chat(request: ChatRequest):
             raise HTTPException(status_code=500, detail="Agent hit max steps without finishing")
         return ChatResponse(answer=answer)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent error: {e}")    
+        raise HTTPException(status_code=500, detail=f"Agent error: {e}")
