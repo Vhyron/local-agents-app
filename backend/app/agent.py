@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import ollama
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 import trafilatura
 
 
