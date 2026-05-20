@@ -1,47 +1,165 @@
-### Sanity check
-GET http://localhost:8000/
+###############################################################################
+# Local Agents API — Manual Test Suite
+###############################################################################
 
-### List models
-GET http://localhost:8000/models
+@baseUrl = http://localhost:8000
+@contentType = application/json
 
-### List agents
-GET http://localhost:8000/agents
+# ─── HEALTH & METADATA ───────────────────────────────────────────────────────
 
-### Create the default Research Agent
-POST http://localhost:8000/agents
-Content-Type: application/json
+### Health check
+# @name healthCheck
+GET {{baseUrl}}/
+
+### List all Ollama models installed locally
+# @name listModels
+GET {{baseUrl}}/models
+
+### List all tools registered in the agent runtime
+# @name listTools
+GET {{baseUrl}}/tools
+
+# ─── AGENTS: READ ────────────────────────────────────────────────────────────
+
+### List all agents
+# @name listAgents
+GET {{baseUrl}}/agents
+
+### Get one agent by ID
+# @name getAgent
+GET {{baseUrl}}/agents/1
+
+# ─── AGENTS: CREATE ──────────────────────────────────────────────────────────
+
+### Create: Research Agent (full-format, cites sources)
+# @name createResearchAgent
+POST {{baseUrl}}/agents
+Content-Type: {{contentType}}
 
 {
   "name": "Research Agent",
-  "system_prompt": "You are a concise research assistant. Find verified information from the web and report it tightly. Always cite sources.",
+  "system_prompt": "You are a concise research assistant. Find verified information from the web and report it tightly.\n\nPROCESS:\n1. Use web_search with num_results=5.\n2. Read 2-3 of the most credible URLs with read_url.\n3. Cross-reference before stating facts.\n4. Prefer primary sources.\n\nOUTPUT:\n**Answer:** [1-2 sentences]\n**Key points:**\n- [fact]\n**Sources:**\n1. [URL]",
   "model": "qwen2.5:7b",
   "temperature": 0.3,
   "enabled_tools": ["web_search", "read_url"]
 }
 
-### Get one agent
-GET http://localhost:8000/agents/1
-
-### Update an agent
-PUT http://localhost:8000/agents/1
-Content-Type: application/json
+### Create: Brief Researcher (single-line answers with persistence)
+# @name createBriefResearcher
+POST {{baseUrl}}/agents
+Content-Type: {{contentType}}
 
 {
-  "name": "Research Agent v2",
-  "system_prompt": "You are an even more concise research assistant.",
+  "name": "Brief Researcher",
+  "system_prompt": "You are a brief researcher. Find the answer through web search, then state it in 1-2 sentences with a source URL.\n\nPROCESS:\n1. Use web_search with num_results=5 (never 1).\n2. If snippets lack the answer, use read_url on the most promising result.\n3. Try different search terms before giving up.\n4. Only say you couldn't find it after at least 2 searches and 1 page fetch.\n\nOUTPUT: One sentence with the answer, followed by the source URL. No preamble.",
+  "model": "qwen2.5:7b",
+  "temperature": 0.3,
+  "enabled_tools": ["web_search", "read_url"]
+}
+
+### Create: Pure Chatbot (no tools, training data only)
+# @name createPureChatbot
+POST {{baseUrl}}/agents
+Content-Type: {{contentType}}
+
+{
+  "name": "Pure Chatbot",
+  "system_prompt": "You are a friendly assistant. Answer from your own knowledge. If you're unsure or the question requires current information, say so plainly rather than guess.",
+  "model": "qwen2.5:7b",
+  "temperature": 0.7,
+  "enabled_tools": []
+}
+
+# ─── AGENTS: UPDATE & DELETE ─────────────────────────────────────────────────
+
+### Update an agent
+# @name updateAgent
+PUT {{baseUrl}}/agents/1
+Content-Type: {{contentType}}
+
+{
+  "name": "Research Agent",
+  "system_prompt": "You are a concise research assistant. Find verified information from the web and report it tightly.",
   "model": "qwen2.5:7b",
   "temperature": 0.2,
   "enabled_tools": ["web_search", "read_url"]
 }
 
-### Send a research question
-POST http://localhost:8000/chat
-Content-Type: application/json
+### Delete an agent by ID
+# @name deleteAgent
+DELETE {{baseUrl}}/agents/99
+
+# ─── CHAT ────────────────────────────────────────────────────────────────────
+
+### Chat with default agent (no agent_id — uses built-in defaults)
+# @name chatDefault
+POST {{baseUrl}}/chat
+Content-Type: {{contentType}}
 
 {
-  "question": "What is the current population of Bacolod City? [BRIEF]",
-  "agent_id": 1
-} 
+  "question": "What is the current population of Bacolod City?"
+}
 
-### Delete an agent
-DELETE http://localhost:8000/agents/1
+### Chat with the Research Agent (full-format response with sources)
+# @name chatResearchAgent
+POST {{baseUrl}}/chat
+Content-Type: {{contentType}}
+
+{
+  "question": "What are the latest developments in fusion energy in 2026?",
+  "agent_id": 1
+}
+
+### Chat with the Brief Researcher (one-line answer)
+# @name chatBriefResearcher
+POST {{baseUrl}}/chat
+Content-Type: {{contentType}}
+
+{
+  "question": "What is the current population of Bacolod City?",
+  "agent_id": 2
+}
+
+### Chat with the Pure Chatbot (no tools, training data only)
+# @name chatPureChatbot
+POST {{baseUrl}}/chat
+Content-Type: {{contentType}}
+
+{
+  "question": "What is the current population of Bacolod City?",
+  "agent_id": 3
+}
+
+# ─── ERROR CASES ─────────────────────────────────────────────────────────────
+
+### Empty question (should return 400)
+# @name chatEmptyQuestion
+POST {{baseUrl}}/chat
+Content-Type: {{contentType}}
+
+{
+  "question": ""
+}
+
+### Non-existent agent (should return 404)
+# @name chatNonExistentAgent
+POST {{baseUrl}}/chat
+Content-Type: {{contentType}}
+
+{
+  "question": "Hello",
+  "agent_id": 9999
+}
+
+### Get a non-existent agent (should return 404)
+# @name getNonExistentAgent
+GET {{baseUrl}}/agents/9999
+
+### Invalid JSON body (should return 422)
+# @name createInvalidAgent
+POST {{baseUrl}}/agents
+Content-Type: {{contentType}}
+
+{
+  "name": "Broken Agent"
+}
