@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 import ollama
 
-from app.agent import run_agent
+from app.agent import run_agent, AgentConfig, available_tool_names
 from app.db import init_db, get_session
 from app.models import Agent, AgentCreate, AgentRead
 
@@ -139,6 +139,24 @@ def delete_agent(agent_id: int, session: Session = Depends(get_session)):
     session.commit()
     return {"deleted": agent_id}
 
+# ─── Tools ─────────────────────────────────────────────────────────────
+
+class ToolInfo(BaseModel):
+    name: str
+    description: str
+
+@app.get("/tools", response_model=list[ToolInfo])
+def list_tools():
+    """List all registered tools that agents can be configured to use."""
+    tool_descriptions = {
+        "web_search": "Search the web for current information",
+        "read_url": "Fetch and extract the main text from a URL",
+    }
+    return [
+        ToolInfo(name=name, description=tool_descriptions.get(name, ""))
+        for name in available_tool_names()
+    ]
+
 # ─── Chat ──────────────────────────────────────────────────────────────
 
 @app.post("/chat", response_model=ChatResponse)
@@ -147,13 +165,23 @@ def chat(request: ChatRequest, session: Session = Depends(get_session)):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
+    # If an agent_id was given, load its config; otherwise use defaults.
     if request.agent_id is not None:
         agent = session.get(Agent, request.agent_id)
         if not agent:
             raise HTTPException(status_code=404, detail=f"Agent {request.agent_id} not found")
 
+        config = AgentConfig(
+            model=agent.model,
+            system_prompt=agent.system_prompt,
+            temperature=agent.temperature,
+            enabled_tools=agent.enabled_tools,
+        )
+    else:
+        config = AgentConfig()
+
     try:
-        answer = run_agent(request.question)
+        answer = run_agent(request.question, config=config)
         if answer is None:
             raise HTTPException(status_code=500, detail="Agent hit max steps without finishing")
         return ChatResponse(answer=answer)
