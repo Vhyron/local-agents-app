@@ -1,8 +1,8 @@
+from dataclasses import dataclass, field
 import ollama
 from duckduckgo_search import DDGS
 import trafilatura
 
-MODEL = "qwen2.5:7b"
 
 # ─── Tools ────────────────────────────────────────────────────────────
 
@@ -38,46 +38,54 @@ def read_url(url: str) -> str:
         return f"Error reading {url}: {e}"
 
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web and return a list of results with titles, URLs, and snippets.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "The search query"},
-                    "num_results": {"type": "integer", "description": "Number of results, default 5"},
+# Tool registry: name → (function, JSON schema for Ollama)
+TOOL_REGISTRY = {
+    "web_search": (
+        web_search,
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web and return a list of results with titles, URLs, and snippets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The search query"},
+                        "num_results": {"type": "integer", "description": "Number of results, default 5"},
+                    },
+                    "required": ["query"],
                 },
-                "required": ["query"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_url",
-            "description": "Fetch a URL and return its main text content.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "The URL to read"},
+    ),
+    "read_url": (
+        read_url,
+        {
+            "type": "function",
+            "function": {
+                "name": "read_url",
+                "description": "Fetch a URL and return its main text content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The URL to read"},
+                    },
+                    "required": ["url"],
                 },
-                "required": ["url"],
             },
         },
-    },
-]
-
-AVAILABLE_TOOLS = {
-    "web_search": web_search,
-    "read_url": read_url,
+    ),
 }
 
-# ─── System prompt ────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a concise research assistant. Your job is to find verified information and report it tightly.
+def available_tool_names() -> list[str]:
+    """Return the list of all registered tool names. Used by the API."""
+    return list(TOOL_REGISTRY.keys())
+
+
+# ─── Defaults (used when no agent config is provided) ─────────────────
+
+DEFAULT_SYSTEM_PROMPT = """You are a concise research assistant. Your job is to find verified information and report it tightly.
 
 RESEARCH PROCESS:
 1. Use web_search to find relevant sources.
@@ -112,20 +120,46 @@ MODIFIERS:
 - If they end with [DEEP DIVE], ignore the concise rules and write a thorough report.
 - Otherwise, follow the default format above."""
 
+
+@dataclass
+class AgentConfig:
+    """Runtime config for an agent. Built from a DB Agent row or used as default."""
+    model: str = "qwen2.5:7b"
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    temperature: float = 0.3
+    enabled_tools: list[str] = field(default_factory=lambda: ["web_search", "read_url"])
+    max_steps: int = 8
+
+
 # ─── Agent loop ───────────────────────────────────────────────────────
 
-def run_agent(user_question: str, max_steps: int = 8):
+def run_agent(user_question: str, config: AgentConfig | None = None) -> str | None:
+    """Run the agent loop. Returns the final answer text, or None if max steps hit."""
+    if config is None:
+        config = AgentConfig()
+
+    # Build the tool list for this run from the agent's enabled tools
+    tools_for_ollama = []
+    available_tools = {}
+    for tool_name in config.enabled_tools:
+        if tool_name not in TOOL_REGISTRY:
+            print(f"Warning: unknown tool '{tool_name}', skipping")
+            continue
+        func, schema = TOOL_REGISTRY[tool_name]
+        available_tools[tool_name] = func
+        tools_for_ollama.append(schema)
+
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": config.system_prompt},
         {"role": "user", "content": user_question},
     ]
 
-    for step in range(max_steps):
+    for step in range(config.max_steps):
         response = ollama.chat(
-            model=MODEL,
+            model=config.model,
             messages=messages,
-            tools=TOOLS,
-            options={"temperature": 0.3},
+            tools=tools_for_ollama if tools_for_ollama else None,
+            options={"temperature": config.temperature},
         )
         msg = response["message"]
         messages.append(msg)
@@ -137,13 +171,13 @@ def run_agent(user_question: str, max_steps: int = 8):
                 args = tool_call["function"]["arguments"]
                 print(f"\n[Step {step + 1}] Calling {name}({args})")
 
-                if name in AVAILABLE_TOOLS:
+                if name in available_tools:
                     try:
-                        result = AVAILABLE_TOOLS[name](**args)
+                        result = available_tools[name](**args)
                     except Exception as e:
                         result = f"Tool error: {e}"
                 else:
-                    result = f"Unknown tool: {name}"
+                    result = f"Tool '{name}' is not enabled for this agent"
 
                 messages.append({"role": "tool", "content": str(result)})
         else:
@@ -155,7 +189,7 @@ def run_agent(user_question: str, max_steps: int = 8):
     return None
 
 
-# ─── Entry point ──────────────────────────────────────────────────────
+# ─── Terminal entry point (kept for standalone testing) ───────────────
 
 if __name__ == "__main__":
     print("Research agent ready. Type your question (or 'quit' to exit).")
